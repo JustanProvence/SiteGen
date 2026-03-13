@@ -1,0 +1,178 @@
+"""PDF export: render each page's HTML with Playwright, stitch with pypdf.
+
+Pages are rendered from the output of our Markdown parser (not from the
+live Flet app), so the PDF is clean text — no sidebar, no navigation chrome.
+Cross-document internal links are stripped to plain text in the output CSS.
+
+This module is designed to be called from a background thread; it uses
+asyncio.run() internally so the caller does not need to manage an event loop.
+"""
+
+import asyncio
+import io
+import logging
+
+import pypdf
+from playwright.async_api import async_playwright
+from pygments.formatters import HtmlFormatter
+
+from sitegen.config import CONTENT_DIR
+from sitegen.content.loader import load_page
+from sitegen.content.parser import parse
+from sitegen.core.document import get_pages_for_document
+from sitegen.core.nav import Document, NavTree
+from sitegen.core.page_resolver import resolve
+from sitegen.export.toc_builder import TocEntry, build_toc
+
+logger = logging.getLogger(__name__)
+
+_PYGMENTS_CSS = HtmlFormatter(style="friendly").get_style_defs(".highlight")
+
+_PAGE_TEMPLATE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; }}
+    body {{
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 11pt;
+      line-height: 1.7;
+      color: #1a1a1a;
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 0;
+    }}
+    h1, h2, h3, h4, h5, h6 {{
+      font-family: system-ui, -apple-system, sans-serif;
+      margin-top: 1.5em;
+      margin-bottom: 0.4em;
+      line-height: 1.3;
+    }}
+    h1 {{ font-size: 1.9em; border-bottom: 1px solid #ddd; padding-bottom: 0.25em; }}
+    h2 {{ font-size: 1.4em; }}
+    h3 {{ font-size: 1.15em; }}
+    p {{ margin: 0.8em 0; }}
+    pre {{
+      background: #f6f8fa;
+      padding: 14px 16px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 0.82em;
+      line-height: 1.5;
+    }}
+    code {{
+      font-family: 'Courier New', Courier, monospace;
+      font-size: 0.88em;
+      background: #f0f0f0;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }}
+    pre code {{ background: none; padding: 0; font-size: inherit; }}
+    table {{ border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.9em; }}
+    th, td {{ border: 1px solid #ccc; padding: 6px 12px; text-align: left; }}
+    th {{ background: #f6f8fa; font-weight: bold; }}
+    blockquote {{
+      border-left: 4px solid #ddd;
+      margin: 1em 0;
+      padding: 0.5em 1em;
+      color: #555;
+    }}
+    /* Strip internal links — they don't work in PDF */
+    a[href^="/"], a[href^="."] {{
+      color: inherit;
+      text-decoration: none;
+      pointer-events: none;
+    }}
+    /* Suppress permalink anchors added by the toc extension */
+    a.headerlink {{ display: none; }}
+    {pygments_css}
+  </style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+
+
+def _render_page_html(slug: str) -> str | None:
+    """Return a standalone HTML string for a content page, or None if missing."""
+    path = resolve(slug, CONTENT_DIR)
+    if path is None:
+        logger.warning("PDF export: page not found for slug %r", slug)
+        return None
+    md = load_page(path)
+    body = parse(md)
+    return _PAGE_TEMPLATE.format(pygments_css=_PYGMENTS_CSS, body=body)
+
+
+async def _html_to_pdf(browser, html: str) -> bytes:
+    """Render an HTML string to PDF bytes using Playwright."""
+    ctx = await browser.new_context()
+    pw_page = await ctx.new_page()
+    await pw_page.set_content(html, wait_until="load")
+    pdf_bytes = await pw_page.pdf(
+        format="A4",
+        margin={"top": "25mm", "bottom": "25mm", "left": "20mm", "right": "20mm"},
+        print_background=True,
+    )
+    await ctx.close()
+    return pdf_bytes
+
+
+async def _export_async(pages_slugs: list[str]) -> list[bytes]:
+    """Capture each page as a PDF and return the list of PDF byte strings."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        results: list[bytes] = []
+        for slug in pages_slugs:
+            html = _render_page_html(slug)
+            if html:
+                pdf_bytes = await _html_to_pdf(browser, html)
+                results.append(pdf_bytes)
+        await browser.close()
+    return results
+
+
+def _stitch_pdfs(pdfs: list[bytes], toc: list[TocEntry]) -> bytes:
+    """Merge individual page PDFs into one and inject PDF outline bookmarks."""
+    writer = pypdf.PdfWriter()
+
+    for pdf_bytes in pdfs:
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        for pdf_page in reader.pages:
+            writer.add_page(pdf_page)
+
+    # Inject document outline (bookmarks); one bookmark per doc page
+    for entry in toc:
+        if entry.page_index < len(writer.pages):
+            writer.add_outline_item(entry.title, entry.page_index)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+def export_document(doc: Document, nav_tree: NavTree) -> bytes:
+    """Generate and return a PDF for the given document.
+
+    Blocking — intended to be called from a background thread so the Flet
+    event loop is not blocked during the (potentially slow) Playwright capture.
+    """
+    pages = get_pages_for_document(doc, nav_tree)
+    toc = build_toc(doc, nav_tree)
+
+    if not pages:
+        raise ValueError(f"Document '{doc.id}' has no pages to export.")
+
+    slugs = [p.slug for p in pages]
+    logger.info("Exporting %d pages for document '%s'", len(slugs), doc.id)
+
+    pdfs = asyncio.run(_export_async(slugs))
+
+    if not pdfs:
+        raise ValueError("No pages were successfully rendered.")
+
+    return _stitch_pdfs(pdfs, toc)

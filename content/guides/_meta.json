@@ -1,0 +1,7 @@
+{
+  "order": [
+    { "slug": "index", "title": "Overview" },
+    { "slug": "content-authoring", "title": "Content Authoring" },
+    { "slug": "cross-linking", "title": "Cross-Document Links" }
+  ]
+}

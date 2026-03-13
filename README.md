@@ -13,7 +13,8 @@ Generate webistes with markdown content directory similar to Nextra but using Fl
 1. Application must use a Containerfile to run, with minimal/python hardened container from ironbank as the base image.
 
 ## Tools
-1. Python 3.12
+1. Python 3.12 
+1. Poetry - for python build and dependency management
 1. [Flet](https://flet.dev/) 
 1. PDF generation with Playwrite 
 1. Podman - to run the images locally

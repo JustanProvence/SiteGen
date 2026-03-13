@@ -1,0 +1,43 @@
+{
+  "site": {
+    "title": "SiteGen Docs",
+    "description": "Documentation for the SiteGen project"
+  },
+  "documents": [
+    {
+      "id": "user-guide",
+      "title": "User Guide",
+      "description": "End-user documentation",
+      "root": "getting-started",
+      "color": "#4A90D9"
+    },
+    {
+      "id": "reference",
+      "title": "Reference",
+      "description": "Configuration and API reference",
+      "root": "reference",
+      "color": "#7B68EE"
+    }
+  ],
+  "nav": [
+    { "type": "page", "slug": "index", "title": "Home" },
+    {
+      "type": "section",
+      "title": "Getting Started",
+      "slug": "getting-started",
+      "document": "user-guide"
+    },
+    {
+      "type": "section",
+      "title": "Guides",
+      "slug": "guides",
+      "document": "user-guide"
+    },
+    {
+      "type": "section",
+      "title": "Reference",
+      "slug": "reference",
+      "document": "reference"
+    }
+  ]
+}

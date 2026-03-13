@@ -1,0 +1,6 @@
+{
+  "order": [
+    { "slug": "index", "title": "Overview" },
+    { "slug": "meta-json", "title": "_meta.json Schema" }
+  ]
+}
