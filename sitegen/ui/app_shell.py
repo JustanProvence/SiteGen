@@ -26,7 +26,7 @@ def build_app(page: ft.Page) -> None:
     page.title = nav_tree.site.get("title", "SiteGen")
     _docs = nav_tree.documents
 
-    _state = {"dark": False, "slug": "index"}
+    _state = {"dark": False, "slug": "index", "tab_index": 0}
 
     # --- Content area ---
     content_md = ft.Markdown(
@@ -34,7 +34,6 @@ def build_app(page: ft.Page) -> None:
         extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
         code_theme=ft.MarkdownCodeTheme.GITHUB,
         selectable=True,
-        expand=True,
         latex_scale_factor=1.2,
     )
     content_area = ft.Container(
@@ -43,12 +42,13 @@ def build_app(page: ft.Page) -> None:
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         ),
+        alignment=ft.Alignment(-1, -1),
         padding=ft.padding.all(32),
         expand=True,
     )
 
     # --- Sidebar ---
-    sidebar_container = ft.Container(width=240)
+    sidebar_container = ft.Container(width=240, alignment=ft.Alignment(-1, -1))
 
     # --- TOC panel ---
     toc_container = ft.Container(width=0)
@@ -74,13 +74,26 @@ def build_app(page: ft.Page) -> None:
         tooltip="Toggle dark mode",
         on_click=None,
     )
-    doc_tabs = ft.Tabs(
-        selected_index=0,
-        animation_duration=200,
-        expand=False,
-        tabs=[ft.Tab(text=doc.title) for doc in _docs],
-        on_change=None,
-    )
+    def _tab_style(active: bool) -> ft.ButtonStyle:
+        return ft.ButtonStyle(
+            color=ft.Colors.WHITE if active else ft.Colors.BLUE_200,
+            bgcolor=ft.Colors.BLUE_900 if active else ft.Colors.TRANSPARENT,
+            padding=ft.padding.symmetric(horizontal=12, vertical=6),
+            shape=ft.RoundedRectangleBorder(radius=4),
+        )
+
+    def _make_tab_buttons() -> list[ft.Control]:
+        return [
+            ft.TextButton(
+                content=ft.Text(doc.title),
+                style=_tab_style(i == _state["tab_index"]),
+                on_click=lambda _, idx=i: on_tab_click(idx),
+            )
+            for i, doc in enumerate(_docs)
+        ]
+
+    doc_tab_row = ft.Row(controls=_make_tab_buttons(), spacing=4)
+
     top_bar = ft.Container(
         content=ft.Row(
             controls=[
@@ -91,7 +104,7 @@ def build_app(page: ft.Page) -> None:
                     color=ft.Colors.WHITE,
                 ),
                 ft.Container(width=24),
-                doc_tabs if _docs else ft.Container(),
+                doc_tab_row if _docs else ft.Container(),
                 ft.Container(expand=True),
                 export_spinner,
                 download_btn,
@@ -120,15 +133,18 @@ def build_app(page: ft.Page) -> None:
     # --- Helpers ---
 
     def _show_snack(message: str, error: bool = False) -> None:
-        page.open(ft.SnackBar(content=ft.Text(message), bgcolor=ft.Colors.RED_700 if error else None))
+        page.show_dialog(ft.SnackBar(content=ft.Text(message), bgcolor=ft.Colors.RED_700 if error else None))
         page.update()
 
     def navigate(slug: str) -> None:
         page.go(f"/{slug}")
 
     def _current_doc():
-        idx = doc_tabs.selected_index or 0
+        idx = _state["tab_index"]
         return _docs[idx] if _docs and idx < len(_docs) else None
+
+    def _rebuild_doc_tabs() -> None:
+        doc_tab_row.controls = _make_tab_buttons()
 
     def _update_doc_tab(slug: str) -> None:
         if not _docs:
@@ -136,7 +152,8 @@ def build_app(page: ft.Page) -> None:
         doc = get_document_for_slug(slug, nav_tree)
         if doc:
             try:
-                doc_tabs.selected_index = _docs.index(doc)
+                _state["tab_index"] = _docs.index(doc)
+                _rebuild_doc_tabs()
             except ValueError:
                 pass
 
@@ -214,7 +231,7 @@ def build_app(page: ft.Page) -> None:
         )
 
         def on_tile_click(slug: str) -> None:
-            page.close(dialog)
+            page.pop_dialog()
             navigate(slug)
 
         # Re-wire tile clicks now that dialog exists
@@ -231,18 +248,15 @@ def build_app(page: ft.Page) -> None:
             results_col.update()
 
         query_field.on_change = on_query_change_v2
-        page.open(dialog)
+        page.show_dialog(dialog)
 
     search_btn.on_click = on_search_click
 
     # --- Document tabs ---
 
-    def on_tab_change(e: ft.ControlEvent) -> None:
-        idx = int(e.data)
+    def on_tab_click(idx: int) -> None:
         if 0 <= idx < len(_docs):
             navigate(_docs[idx].root)
-
-    doc_tabs.on_change = on_tab_change
 
     # --- PDF export ---
 
@@ -258,7 +272,11 @@ def build_app(page: ft.Page) -> None:
             try:
                 pdf_bytes = export_document(doc, nav_tree)
                 url = pdf_server.store(doc.id, pdf_bytes)
-                page.launch_url(url)
+
+                async def _launch(u: str = url) -> None:
+                    await page.launch_url(u)
+
+                page.run_task(_launch)
             except Exception as exc:
                 logger.exception("PDF export failed for doc '%s'", doc.id)
                 _show_snack(f"Export failed: {exc}", error=True)
