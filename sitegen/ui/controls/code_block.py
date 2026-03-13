@@ -4,9 +4,7 @@ import flet as ft
 
 
 def build_code_block(language: str, code: str, page: ft.Page, dark: bool = False) -> ft.Control:
-    bg = ft.Colors.GREY_900 if dark else ft.Colors.GREY_100
     border_color = ft.Colors.GREY_700 if dark else ft.Colors.GREY_300
-    text_color = ft.Colors.GREY_100 if dark else ft.Colors.GREY_900
     label_color = ft.Colors.GREY_500
 
     def _copy(_e: ft.ControlEvent) -> None:
@@ -30,26 +28,26 @@ def build_code_block(language: str, code: str, page: ft.Page, dark: bool = False
     header_controls.append(ft.Container(expand=True))
     header_controls.append(copy_icon)
 
+    # Render the code as ft.Markdown to preserve Flet's built-in syntax highlighting
+    fence = f"```{language}\n{code.rstrip()}\n```"
+    code_md = ft.Markdown(
+        value=fence,
+        extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+        code_theme=ft.MarkdownCodeTheme.GITHUB,
+        selectable=True,
+    )
+
     return ft.Container(
         content=ft.Column(
             controls=[
                 ft.Row(controls=header_controls, spacing=4),
-                ft.Divider(height=1, color=border_color),
-                ft.Text(
-                    code.rstrip("\n"),
-                    font_family="monospace",
-                    size=12,
-                    color=text_color,
-                    selectable=True,
-                    no_wrap=False,
-                ),
+                code_md,
             ],
-            spacing=4,
+            spacing=0,
             tight=True,
         ),
-        bgcolor=bg,
         border=ft.border.all(1, border_color),
         border_radius=8,
-        padding=ft.padding.symmetric(horizontal=16, vertical=10),
+        padding=ft.padding.only(left=8, right=8, top=8, bottom=0),
         margin=ft.margin.symmetric(vertical=8),
     )

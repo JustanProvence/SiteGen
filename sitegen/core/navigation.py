@@ -24,8 +24,12 @@ def _flat_pages(nav_tree: NavTree) -> list[NavNode]:
 
 
 def get_prev_next(slug: str, nav_tree: NavTree) -> tuple[PageLink | None, PageLink | None]:
-    """Return (prev, next) PageLink for the given slug, or None if at boundary."""
-    pages = _flat_pages(nav_tree)
+    """Return (prev, next) PageLink within the same document, or None if at boundary."""
+    all_pages = _flat_pages(nav_tree)
+    # Find which document this slug belongs to
+    doc_id = next((n.document_id for n in all_pages if n.slug == slug and n.document_id), None)
+    # Scope to the same document only (or all standalone pages if no doc)
+    pages = [n for n in all_pages if n.document_id == doc_id] if doc_id else all_pages
     for i, node in enumerate(pages):
         if node.slug == slug:
             prev = PageLink(pages[i - 1].title, pages[i - 1].slug) if i > 0 else None

@@ -10,6 +10,7 @@ def build_sidebar(
     active_slug: str,
     on_navigate,
     dark: bool = False,
+    active_doc_id: str | None = None,
 ) -> ft.Container:
     """Build the navigation sidebar for the given nav tree and active page."""
     colors = _dark_colors() if dark else _light_colors()
@@ -17,6 +18,8 @@ def build_sidebar(
 
     for node in nav_tree.nodes:
         if node.is_section:
+            if active_doc_id and node.document_id != active_doc_id:
+                continue
             items.append(_section_header(node, active_slug, on_navigate, colors))
             for child in node.children:
                 items.append(_page_item(child.title, child.slug, active_slug, on_navigate, colors, indent=16))

@@ -34,13 +34,14 @@ def build_app(page: ft.Page) -> None:
     content_col = ft.Column(controls=[], tight=True)
     breadcrumb_container = ft.Container()
     prev_next_container = ft.Container()
+    content_scroll_col = ft.Column(
+        controls=[breadcrumb_container, content_col, prev_next_container],
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+    )
 
     content_area = ft.Container(
-        content=ft.Column(
-            controls=[breadcrumb_container, content_col, prev_next_container],
-            scroll=ft.ScrollMode.AUTO,
-            expand=True,
-        ),
+        content=content_scroll_col,
         alignment=ft.Alignment(-1, -1),
         padding=ft.padding.all(32),
         expand=True,
@@ -158,10 +159,17 @@ def build_app(page: ft.Page) -> None:
                 pass
 
     def _rebuild_sidebar() -> None:
-        sidebar_container.content = build_sidebar(nav_tree, _state["slug"], navigate, dark=_state["dark"]).content
+        doc = _current_doc()
+        doc_id = doc.id if doc else None
+        sidebar_container.content = build_sidebar(
+            nav_tree, _state["slug"], navigate, dark=_state["dark"], active_doc_id=doc_id
+        ).content
 
     def _rebuild_toc(toc_tokens: list[dict]) -> None:
-        toc_panel = build_toc_panel(toc_tokens, dark=_state["dark"])
+        def _on_anchor(anchor_id: str) -> None:
+            page.go(f"/{_state['slug']}#{anchor_id}")
+
+        toc_panel = build_toc_panel(toc_tokens, dark=_state["dark"], on_anchor_click=_on_anchor)
         if toc_panel:
             toc_container.content = ft.Column(
                 controls=[
@@ -198,7 +206,7 @@ def build_app(page: ft.Page) -> None:
         if path:
             entry = page_cache.get_page(path)
             _rebuild_toc(entry.toc_tokens)
-            content_col.controls = _build_content_controls(entry.raw)
+            content_col.controls = _build_content_controls(entry.raw, entry.toc_tokens)
         _rebuild_nav_controls(slug)
         page.update()
 
@@ -300,23 +308,53 @@ def build_app(page: ft.Page) -> None:
 
     # --- Content building ---
 
-    def _build_content_controls(raw_md: str) -> list[ft.Control]:
+    def _build_content_controls(raw_md: str, toc_tokens: list[dict] | None = None) -> list[ft.Control]:
+        import re
         from sitegen.content.code_splitter import CodeSegment, TextSegment, split_code_blocks
         from sitegen.ui.controls.code_block import build_code_block
+
+        # Build anchor-id lookup from toc_tokens: {heading_name -> id}
+        _anchor_map: dict[str, str] = {}
+
+        def _collect_ids(tokens: list[dict]) -> None:
+            for t in tokens:
+                _anchor_map[t.get("name", "").strip()] = t.get("id", "")
+                _collect_ids(t.get("children", []))
+
+        _collect_ids(toc_tokens or [])
+
+        # Split at heading boundaries (lookahead keeps the heading line at the start of each part)
+        _heading_split_re = re.compile(r"(?=^#{1,6}\s)", re.MULTILINE)
+        _heading_line_re = re.compile(r"^#{1,6}\s+(.+)")
+
+        def _make_md(text: str) -> ft.Markdown:
+            return ft.Markdown(
+                value=text,
+                extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
+                code_theme=ft.MarkdownCodeTheme.GITHUB,
+                selectable=True,
+                latex_scale_factor=1.2,
+                on_tap_link=on_link_tap,
+            )
 
         segments = split_code_blocks(raw_md)
         controls: list[ft.Control] = []
         for seg in segments:
             if isinstance(seg, TextSegment):
-                md = ft.Markdown(
-                    value=seg.text,
-                    extension_set=ft.MarkdownExtensionSet.GITHUB_WEB,
-                    code_theme=ft.MarkdownCodeTheme.GITHUB,
-                    selectable=True,
-                    latex_scale_factor=1.2,
-                    on_tap_link=on_link_tap,
-                )
-                controls.append(md)
+                # Split further at heading boundaries so each heading gets its own scroll key
+                parts = [p for p in _heading_split_re.split(seg.text) if p.strip()]
+                if not parts:
+                    parts = [seg.text]
+                for part in parts:
+                    md = _make_md(part)
+                    m = _heading_line_re.match(part.strip())
+                    if m:
+                        heading_text = re.sub(r"[*_`#]", "", m.group(1)).strip()
+                        anchor_id = _anchor_map.get(heading_text, "")
+                        if anchor_id:
+                            controls.append(ft.Container(content=md, key=ft.ScrollKey(anchor_id)))
+                            continue
+                    controls.append(md)
             elif isinstance(seg, CodeSegment):
                 controls.append(build_code_block(seg.language, seg.code, page, dark=_state["dark"]))
         return controls
@@ -331,14 +369,24 @@ def build_app(page: ft.Page) -> None:
     # --- Route loading ---
 
     def load_route(route: str) -> None:
-        slug = route.strip("/") or "index"
+        raw = route.strip("/") or "index"
+        slug, _, anchor = raw.partition("#")
+        slug = slug or "index"
+
+        # Same page, only hash changed — scroll without re-rendering
+        if slug == _state["slug"] and anchor:
+            async def _scroll() -> None:
+                await content_scroll_col.scroll_to(scroll_key=anchor, duration=300)
+            page.run_task(_scroll)
+            return
+
         _state["slug"] = slug
 
         try:
             path = resolve(slug, CONTENT_DIR)
             if path:
                 entry = page_cache.get_page(path)
-                content_col.controls = _build_content_controls(entry.raw)
+                content_col.controls = _build_content_controls(entry.raw, entry.toc_tokens)
                 _rebuild_toc(entry.toc_tokens)
             else:
                 content_col.controls = [
@@ -362,11 +410,18 @@ def build_app(page: ft.Page) -> None:
             ]
             _rebuild_toc([])
 
-        _rebuild_sidebar()
         _update_doc_tab(slug)
+        _rebuild_sidebar()
         _rebuild_nav_controls(slug)
         download_btn.visible = bool(_current_doc())
         page.update()
+
+        if anchor:
+            async def _scroll_after_load(a: str = anchor) -> None:
+                import asyncio
+                await asyncio.sleep(1.0)
+                await content_scroll_col.scroll_to(scroll_key=a, duration=300)
+            page.run_task(_scroll_after_load)
 
     page.on_route_change = lambda e: load_route(e.route)
     load_route(page.route or "/")
